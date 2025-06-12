@@ -5,8 +5,10 @@ import {
   ListItem, ListItemIcon, ListItemText, Paper,
 } from '@mui/material';
 import { styled } from '@mui/material/styles';
-import { Lock, Github, Shield, Building, FileText, AlertCircle, Clock, CheckCircle, Download, Edit2, AlertTriangle } from 'lucide-react';
+import { Tabs, Tab, Select, MenuItem, FormControl, InputLabel } from '@mui/material';
+import { Lock, Github, Shield, Building, FileText, AlertCircle, Clock, CheckCircle, Download, Edit2, AlertTriangle, ArrowUp } from 'lucide-react';
 import './CodeReviewSystem.css';
+import { ArrowDown} from 'lucide-react';
 
 const StyledCard = styled(Card)(({ theme }) => ({
   marginBottom: theme.spacing(2),
@@ -31,6 +33,34 @@ const CodeReviewSystem = () => {
   const [reportData, setReportData] = useState(null);
   const [error, setError] = useState(null);
   const [healthStatus, setHealthStatus] = useState(null);
+  const [selectedAnalysis, setSelectedAnalysis] = useState('industry');
+  const [expandedCards, setExpandedCards] = useState({});
+
+  const getShortFilePath = (fullPath) => {
+    if (!fullPath) return '';
+    // Normalize slashes
+    const parts = fullPath.replace(/\\/g, '/').split('/');
+    // Take last 3 parts: e.g. "public_safety_app/PublicSafetyApplication.java"
+    const lastParts = parts.slice(-2);
+    return lastParts.join('/');
+  };
+  
+  const toggleExpand = (index) => {
+    setExpandedCards(prev => ({
+      ...prev,
+      [index]: !prev[index]
+    }));
+  };  
+  const handleAnalysisChange = (event, newValue) => {
+    if (typeof newValue === 'string') {
+      setSelectedAnalysis(prev => (prev === newValue ? null : newValue));
+    }
+  };
+  
+  const handleDropdownChange = (event) => {
+    setSelectedAnalysis(event.target.value);
+    setSelectedAnalysis(prev => (prev === value ? null : value));
+  };
 
   useEffect(() => {
     checkHealth();
@@ -127,18 +157,14 @@ const CodeReviewSystem = () => {
           <Toolbar>
             <Box display="flex" alignItems="center">
               <Lock className="mr-2" size={24} color="white" />
-              <Typography variant="h6" color="white">CodeSecure</Typography>
+              <Typography variant="h6" color="white">Peer Review</Typography>
             </Box>
             <Box sx={{ flexGrow: 1 }} />
-            <Box sx={{ display: { xs: 'none', md: 'flex' }, alignItems: 'center' }}>
-              <i className="fas fa-user-circle mr-2" style={{ color: 'white', fontSize: '1.2rem' }}></i>
-              <Typography variant="body1" color="white">Adithya Krishna</Typography>
-            </Box>
           </Toolbar>
         </AppBar>
 
         <Container maxWidth="lg" sx={{ py: 4 }}>
-          <Typography variant="h4" className="editor-title">Code Review System</Typography>
+          <Typography variant="h4" className="editor-title">Peer Review System</Typography>
           <Typography variant="subtitle1" className="form-label">
             AI-powered standards scanning for GitHub repositories
           </Typography>
@@ -282,108 +308,191 @@ const CodeReviewSystem = () => {
                 </Grid>
               )}
 
-              {reportData.industry_standards_analysis && !reportData.industry_standards_analysis.error && (
-                <Box mt={4} className="templates-section" sx={{ borderLeft: '4px solid #319795', pl: 2, backgroundColor: '#F7FAFC' }}>
-                  <Typography variant="h6" className="form-label" sx={{ fontWeight: 'bold' }}>
-                    <Shield size={20} className="mr-2" /> Industry Standards Analysis
-                  </Typography>
-                  <Typography variant="caption" className="upload-hint">General Standards</Typography>
-                  {reportData.industry_standards_analysis.findings?.map((finding, index) => (
-                    <StyledCard key={index} className="template-item">
-                      <CardContent>
-                        <Box display="flex" justifyContent="space-between" alignItems="center" className="template-item-header">
-                          <Box>
-                            <Typography variant="subtitle1" className="template-name">{finding.file?.split('/').pop() || finding.file}</Typography>
-                            <Chip label={finding.language} size="small" sx={{ backgroundColor: '#F7FAFC', color: '#2D3748' }} />
-                          </Box>
-                          {finding.severity && (
-                            <Chip label={finding.severity} sx={getSeverityBadge(finding.severity)} />
-                          )}
-                        </Box>
-                        <Box className="template-preview">
-                          {finding.security_issues && (
-                            <Box>
-                              <Typography variant="subtitle2">Security Issues</Typography>
-                              <Typography variant="body2" className="upload-hint">{finding.security_issues}</Typography>
-                            </Box>
-                          )}
-                          {finding.quality_issues && (
-                            <Box mt={2}>
-                              <Typography variant="subtitle2">Quality Issues</Typography>
-                              <Typography variant="body2" className="upload-hint">{finding.quality_issues}</Typography>
-                            </Box>
-                          )}
-                          {finding.standard_violations && (
-                            <Box mt={2}>
-                              <Typography variant="subtitle2">Standard Violations</Typography>
-                              <Typography variant="body2" className="upload-hint">{finding.standard_violations}</Typography>
-                            </Box>
-                          )}
-                          {finding.recommendations && (
-                            <Box mt={2}>
-                              <Typography variant="subtitle2">Recommendations</Typography>
-                              <Typography variant="body2" className="upload-hint">{finding.recommendations}</Typography>
-                            </Box>
-                          )}
-                        </Box>
-                      </CardContent>
-                    </StyledCard>
-                  ))}
-                </Box>
-              )}
+    {reportData && (
+      <>
+        {/* Tabs for larger screens */}
+        <Tabs
+      value={selectedAnalysis}
+      aria-label="Analysis Tabs"
+      sx={{ borderBottom: 1, borderColor: 'divider', display: { xs: 'none', md: 'flex' }, mb: 3 }}
+      textColor="primary"
+      indicatorColor="primary"
+    >
+      <Tab
+        label="Industry Standards"
+        value="industry"
+        onClick={() => setSelectedAnalysis(prev => (prev === 'industry' ? null : 'industry'))}
+      />
+      <Tab
+        label="Company Standards"
+        value="company"
+        onClick={() => setSelectedAnalysis(prev => (prev === 'company' ? null : 'company'))}
+      />
+    </Tabs>
 
-              {reportData.company_standards_analysis && !reportData.company_standards_analysis.error && (
-                <Box mt={4} className="templates-section" sx={{ borderLeft: '4px solid #6B46C1', pl: 2, backgroundColor: '#F7FAFC' }}>
-                  <Typography variant="h6" className="form-label" sx={{ fontWeight: 'bold' }}>
-                    <Building size={20} className="mr-2" /> Company Standards Analysis
+    {/* Dropdown for smaller screens */}
+    <FormControl
+      fullWidth
+      sx={{ mb: 3, display: { xs: 'block', md: 'none' } }}
+      size="small"
+    >
+      <InputLabel id="analysis-select-label">Select Analysis</InputLabel>
+      <Select
+        labelId="analysis-select-label"
+        id="analysis-select"
+        value={selectedAnalysis}
+        label="Select Analysis"
+        onChange={handleDropdownChange}
+      >
+        <MenuItem value="industry">Industry Standards</MenuItem>
+        <MenuItem value="company">Company Standards</MenuItem>
+      </Select>
+    </FormControl>
+
+    {/* Render Industry Standards Analysis */}
+    {selectedAnalysis === 'industry' && reportData.industry_standards_analysis && !reportData.industry_standards_analysis.error && (
+      <Box sx={{ borderLeft: '4px solid #319795', p: 2, backgroundColor: '#F7FAFC' }}>
+        <Typography variant="h6" sx={{ fontWeight: 'bold', mb: 2 }}>
+          <Shield size={20} className="mr-2" /> Industry Standards Analysis
+        </Typography>
+        <Typography variant="caption" className="upload-hint" sx={{ mb: 2 }}>
+          General Standards
+        </Typography>
+        {reportData.industry_standards_analysis.findings?.map((finding, index) => (
+          <StyledCard key={index} className="template-item">
+            <CardContent>
+              <Box display="flex" justifyContent="space-between" alignItems="center" className="template-item-header">
+                <Box display="flex" alignItems="center" sx={{ flexGrow: 1 }}>
+                  {/* File path: show only last two folders + filename */}
+                  <Typography variant="subtitle1" className="template-name" sx={{ mr: 1, fontWeight: 'bold' }}>
+                    {getShortFilePath(finding.file)}
                   </Typography>
-                  <Typography variant="caption" className="upload-hint">Internal coding standards and policies</Typography>
-                  {reportData.company_standards_analysis.findings?.map((finding, index) => (
-                    <StyledCard key={index} className="template-item">
-                      <CardContent>
-                        <Box display="flex" justifyContent="space-between" alignItems="center" className="template-item-header">
-                          <Box>
-                            <Typography variant="subtitle1" className="template-name">{finding.file?.split('/').pop() || finding.file}</Typography>
-                            <Chip label={finding.language} size="small" sx={{ backgroundColor: '#F7FAFC', color: '#2D3748' }} />
-                          </Box>
-                          {finding.compliance_score && (
-                            <Chip
-                              label={`Score: ${finding.compliance_score}/10`}
-                              sx={getComplianceScoreBadge(finding.compliance_score)}
-                            />
-                          )}
-                        </Box>
-                        <Box className="template-preview">
-                          {finding.style_issues && (
-                            <Box>
-                              <Typography variant="subtitle2">Style Issues</Typography>
-                              <Typography variant="body2" className="upload-hint">{finding.style_issues}</Typography>
-                            </Box>
-                          )}
-                          {finding.documentation_issues && (
-                            <Box mt={2}>
-                              <Typography variant="subtitle2">Documentation Issues</Typography>
-                              <Typography variant="body2" className="upload-hint">{finding.documentation_issues}</Typography>
-                            </Box>
-                          )}
-                          {finding.policy_violations && (
-                            <Box mt={2}>
-                              <Typography variant="subtitle2">Policy Violations</Typography>
-                              <Typography variant="body2" className="upload-hint">{finding.policy_violations}</Typography>
-                            </Box>
-                          )}
-                          {finding.recommendations && (
-                            <Box mt={2}>
-                              <Typography variant="subtitle2">Recommendations</Typography>
-                              <Typography variant="body2" className="upload-hint">{finding.recommendations}</Typography>
-                            </Box>
-                          )}
-                        </Box>
-                      </CardContent>
-                    </StyledCard>
-                  ))}
+                  <Chip label={finding.language} size="small" sx={{ backgroundColor: '#F7FAFC', color: '#2D3748' }} />
+                  {finding.severity && (
+                  <Chip label={finding.severity} size='small' sx={getSeverityBadge(finding.severity)} />
+                )}
+                </Box>
+                {/* Expand/Collapse arrow */}
+                <Button
+                  size="small"
+                  onClick={() => toggleExpand(index)}
+                  aria-expanded={!!expandedCards[index]}
+                  aria-label={expandedCards[index] ? 'Collapse details' : 'Expand details'}
+                  sx={{ minWidth: 'auto', padding: 0 }}
+                >
+                  {expandedCards[index] ? <ArrowUp /> : <ArrowDown />}
+                </Button>
+              </Box       >
+
+              {/* Conditionally render the full details if expanded */}
+              {expandedCards[index] && (
+                <Box className="template-preview" sx={{ mt: 2 }}>
+                  {finding.security_issues && (
+                    <Box>
+                      <Typography variant="subtitle2">Security Issues</Typography>
+                      <Typography variant="body2" className="upload-hint">{finding.security_issues}</Typography>
+                    </Box>
+                  )}
+                  {finding.quality_issues && (
+                    <Box mt={2}>
+                      <Typography variant="subtitle2">Quality Issues</Typography>
+                      <Typography variant="body2" className="upload-hint">{finding.quality_issues}</Typography>
+                    </Box>
+                  )}
+                  {finding.standard_violations && (
+                    <Box mt={2}>
+                      <Typography variant="subtitle2">Standard Violations</Typography>
+                      <Typography variant="body2" className="upload-hint">{finding.standard_violations}</Typography>
+                    </Box>
+                  )}
+                  {finding.recommendations && (
+                    <Box mt={2}>
+                      <Typography variant="subtitle2">Recommendations</Typography>
+                      <Typography variant="body2" className="upload-hint">{finding.recommendations}</Typography>
+                    </Box>
+                  )}
                 </Box>
               )}
+            </CardContent>
+          </StyledCard>
+        ))}
+      </Box>
+    )}
+
+  {selectedAnalysis === 'company' && reportData.company_standards_analysis && !reportData.company_standards_analysis.error && (
+    <Box sx={{ borderLeft: '4px solid #6B46C1', p: 2, backgroundColor: '#F7FAFC' }}>
+      <Typography variant="h6" sx={{ fontWeight: 'bold', mb: 2 }}>
+        <Building size={20} className="mr-2" /> Company Standards Analysis
+      </Typography>
+      <Typography variant="caption" className="upload-hint" sx={{ mb: 2 }}>
+        Internal coding standards and policies
+      </Typography>
+      {reportData.company_standards_analysis.findings?.map((finding, index) => (
+        <StyledCard key={index} className="template-item">
+          <CardContent>
+            <Box display="flex" justifyContent="space-between" alignItems="center" className="template-item-header">
+              <Box display="flex" alignItems="center" sx={{ flexGrow: 1 }}>
+                {/* File path: show only last two folders + filename */}
+                <Typography variant="subtitle1" className="template-name" sx={{ mr: 1, fontWeight: 'bold' }}>
+                  {getShortFilePath(finding.file)}
+                </Typography>
+                <Chip label={finding.language} size="small" sx={{ backgroundColor: '#F7FAFC', color: '#2D3748' }} />
+                {finding.compliance_score && (
+                  <Chip
+                    label={`Score: ${finding.compliance_score}/10`}
+                    sx={getComplianceScoreBadge(finding.compliance_score)}
+                  />
+                )}
+              </Box>
+              {/* Expand/Collapse arrow */}
+              <Button
+                size="small"
+                onClick={() => toggleExpand(index)}
+                aria-expanded={!!expandedCards[index]}
+                aria-label={expandedCards[index] ? 'Collapse details' : 'Expand details'}
+                sx={{ minWidth: 'auto', padding: 0 }}
+              >
+                {expandedCards[index] ? <ArrowUp /> : <ArrowDown />}
+              </Button>
+            </Box>
+
+            {/* Conditionally render the full details if expanded */}
+            {expandedCards[index] && (
+              <Box className="template-preview" sx={{ mt: 2 }}>
+                {finding.style_issues && (
+                  <Box>
+                    <Typography variant="subtitle2">Style Issues</Typography>
+                    <Typography variant="body2" className="upload-hint">{finding.style_issues}</Typography>
+                  </Box>
+                )}
+                {finding.documentation_issues && (
+                  <Box mt={2}>
+                    <Typography variant="subtitle2">Documentation Issues</Typography>
+                    <Typography variant="body2" className="upload-hint">{finding.documentation_issues}</Typography>
+                  </Box>
+                )}
+                {finding.policy_violations && (
+                  <Box mt={2}>
+                    <Typography variant="subtitle2">Policy Violations</Typography>
+                    <Typography variant="body2" className="upload-hint">{finding.policy_violations}</Typography>
+                  </Box>
+                )}
+                {finding.recommendations && (
+                  <Box mt={2}>
+                    <Typography variant="subtitle2">Recommendations</Typography>
+                    <Typography variant="body2" className="upload-hint">{finding.recommendations}</Typography>
+                  </Box>
+                )}
+              </Box>
+            )}
+          </CardContent>
+        </StyledCard>
+      ))}
+    </Box>
+    )}
+  </>
+)}
+
 
               {reportData.recommendations && (
                 <Box mt={4} className="templates-section">
