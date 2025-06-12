@@ -38,7 +38,7 @@ app.add_middleware(
 # Configuration
 UPLOAD_FOLDER = "uploads"
 STANDARDS_FOLDER = "standards"
-INDUSTRY_STANDARDS_FILE = os.path.join(STANDARDS_FOLDER, "industry_standards.docx")
+INDUSTRY_STANDARDS_FILE = os.path.join(STANDARDS_FOLDER, "Industry_Standards-updated.docx")
 COMPANY_STANDARDS_FILE = os.path.join(STANDARDS_FOLDER, "company_standards.docx")
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(STANDARDS_FOLDER, exist_ok=True)
