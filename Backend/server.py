@@ -13,21 +13,21 @@ from openai import AzureOpenAI
 from datetime import datetime
 import time
 from docx import Document
-import psutil  
+import psutil
 from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
-
-
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 load_dotenv()
+
 app = FastAPI(
     title="Code Review System - AI Standards Scanner",
-    description="API to scan a public GitHub repository against industry and company-specific standards using Azure OpenAI and RAG, with standards from .docx files in the 'standards' folder.",
+    description="API to scan a public GitHub repository against industry and company-specific standards for code and IaC files using Azure OpenAI and RAG, with standards from .docx files in the 'standards' folder.",
     version="1.0.0"
 )
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173"],  # Vite dev server
@@ -35,17 +35,18 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 # Configuration
 UPLOAD_FOLDER = "uploads"
 STANDARDS_FOLDER = "standards"
 INDUSTRY_STANDARDS_FILE = os.path.join(STANDARDS_FOLDER, "Industry_Standards-updated.docx")
-COMPANY_STANDARDS_FILE = os.path.join(STANDARDS_FOLDER, "company_standards.docx")
+COMPANY_STANDARDS_FILE = os.path.join(STANDARDS_FOLDER, "company_specific_standards.docx")
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(STANDARDS_FOLDER, exist_ok=True)
 AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
 AZURE_OPENAI_KEY = os.getenv("AZURE_OPENAI_API_KEY")
 AZURE_OPENAI_MODEL = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME")
-AZURE_OPENAI_VERSION=os.getenv("AZURE_OPENAI_API_VERSION")
+AZURE_OPENAI_VERSION = os.getenv("AZURE_OPENAI_API_VERSION")
 
 # Initialize Azure OpenAI client
 try:
@@ -58,7 +59,6 @@ try:
 except Exception as e:
     logger.error(f"Failed to initialize Azure OpenAI client: {e}")
     openai_client = None
-
 
 def read_docx(file_path):
     """
@@ -81,25 +81,33 @@ def read_docx(file_path):
         logger.error(f"Failed to read .docx file {file_path}: {e}")
         return None
 
-# Load standards from .docx files - FIXED: Now properly using the actual document content
+# Load standards from .docx files
 INDUSTRY_STANDARDS_DOC = read_docx(INDUSTRY_STANDARDS_FILE)
 COMPANY_STANDARDS_DOC = read_docx(COMPANY_STANDARDS_FILE)
 
-# Only use fallback if the actual documents fail to load
+# Fallback standards if documents fail to load
 if not INDUSTRY_STANDARDS_DOC:
     logger.warning("Industry standards document not found or empty, using fallback")
     INDUSTRY_STANDARDS_DOC = """
     1. OWASP Top 10: Ensure no SQL injection vulnerabilities (A03:2021).
     2. CWE Top 25: Avoid improper input validation (CWE-20).
     3. Secure Coding: Use HTTPS for network communications.
+    4. Terraform: Use least privilege for IAM roles and validate inputs.
+    5. YAML/CloudFormation: Ensure secure S3 bucket configurations.
+    6. Bash: Avoid unquoted variables to prevent command injection.
+    7. Dockerfile: Use minimal base images and avoid running as root.
     """
 
 if not COMPANY_STANDARDS_DOC:
-    logger.warning("Company standards document not found or empty, using fallback") 
+    logger.warning("Company standards document not found or empty, using fallback")
     COMPANY_STANDARDS_DOC = """
     1. Code Style: Use snake_case for variable names in Python.
     2. Security: Avoid hardcoding sensitive data like API keys.
     3. Documentation: Include docstrings for all functions.
+    4. Terraform: Use modules for reusable configurations.
+    5. YAML: Maintain consistent indentation and validate schemas.
+    6. Bash: Include shebang and error handling.
+    7. Dockerfile: Pin image versions and include MAINTAINER labels.
     """
 
 logger.info(f"Industry standards loaded: {len(INDUSTRY_STANDARDS_DOC)} characters")
@@ -143,8 +151,8 @@ def clone_repo(github_url):
     logger.debug(f"Cloning repository from {github_url} to {repo_dir}")
     try:
         result = subprocess.run(
-            ["git", "clone", github_url,repo_dir],
-             capture_output=True, text=True, timeout=120, check=True
+            ["git", "clone", github_url, repo_dir],
+            capture_output=True, text=True, timeout=120, check=True
         )
         logger.debug(f"Clone successful: {result.stdout}")
         return repo_dir
@@ -160,19 +168,23 @@ def clone_repo(github_url):
 
 def read_code_files(repo_dir, max_files=100, max_size=10000):
     """
-    Read code files from the repository, limiting to max_files and max_size per file.
+    Read code and IaC files from the repository, limiting to max_files and max_size per file.
     Returns a list of (file_path, content) tuples.
     """
-    logger.debug(f"Reading code files from {repo_dir}")
+    logger.debug(f"Reading code and IaC files from {repo_dir}")
     code_files = []
-    extensions = (".py", ".js", ".java", ".cpp", ".c", ".go", ".html", ".css", ".cs", ".php", ".rb", ".kt", ".swift", ".scala", ".ts")
+    extensions = (
+        ".py", ".js", ".java", ".cpp", ".c", ".go", ".html", ".css", ".cs",
+        ".php", ".rb", ".kt", ".swift", ".scala", ".ts", ".hcl", ".yaml", ".yml", ".sh"
+    )
+    dockerfile_names = ("Dockerfile",)
     for root, _, files in os.walk(repo_dir):
         for file in files:
             if len(code_files) >= max_files:
                 logger.debug(f"Reached max_files limit: {max_files}")
                 break
-            if file.endswith(extensions):
-                file_path = os.path.join(root, file)
+            file_path = os.path.join(root, file)
+            if file.endswith(extensions) or file in dockerfile_names:
                 try:
                     with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                         content = f.read(max_size)
@@ -181,9 +193,9 @@ def read_code_files(repo_dir, max_files=100, max_size=10000):
                 except Exception as e:
                     logger.warning(f"Failed to read {file_path}: {e}")
     if not code_files:
-        logger.warning(f"No code files found in {repo_dir} with extensions {extensions}")
+        logger.warning(f"No code or IaC files found in {repo_dir} with extensions {extensions} or names {dockerfile_names}")
     else:
-        logger.debug(f"Found {len(code_files)} code files")
+        logger.debug(f"Found {len(code_files)} code and IaC files")
     return code_files
 
 def simple_vectorize(text):
@@ -255,13 +267,14 @@ def retrieve_relevant_sections(doc_content, query, top_k=3):
 
 def get_language_specific_standards(file_path, standards_doc):
     """
-    Extract language-specific standards based on file extension.
+    Extract language-specific standards based on file extension or name.
     """
-    extension = os.path.splitext(file_path)[1].lower()
+    file_name = os.path.basename(file_path)
+    extension = os.path.splitext(file_name)[1].lower()
     language_map = {
         '.java': 'Java',
         '.js': 'JavaScript',
-        '.ts': 'TypeScript', 
+        '.ts': 'TypeScript',
         '.py': 'Python',
         '.cs': 'C#',
         '.cpp': 'C++',
@@ -271,10 +284,18 @@ def get_language_specific_standards(file_path, standards_doc):
         '.rb': 'Ruby',
         '.kt': 'Kotlin',
         '.swift': 'Swift',
-        '.scala': 'Scala'
+        '.scala': 'Scala',
+        '.hcl': 'Terraform',
+        '.yaml': 'YAML',
+        '.yml': 'YAML',
+        '.sh': 'Bash'
     }
     
-    language = language_map.get(extension, 'General')
+    # Special case for Dockerfile
+    if file_name == 'Dockerfile':
+        language = 'Dockerfile'
+    else:
+        language = language_map.get(extension, 'General')
     
     # Look for language-specific sections in the standards document
     query = f"{language} coding standards best practices security"
@@ -295,8 +316,8 @@ def industry_standards_agent(repo_dir, industrial_standard):
         # Read code files
         code_files = read_code_files(repo_dir)
         if not code_files:
-            logger.warning("No code files found for industry standards scan")
-            return {"error": "No code files found"}
+            logger.warning("No code or IaC files found for industry standards scan")
+            return {"error": "No code or IaC files found"}
 
         # Map industrial standard to a description
         standards_map = {
@@ -324,16 +345,16 @@ def industry_standards_agent(repo_dir, industrial_standard):
                     relevant_sections = ["General coding best practices apply"]
 
                 # Construct system and user messages for chat completion
-                system_message = f"""You are an expert code reviewer specializing in {language} development. 
-Analyze code against {standard_desc} and provide a detailed analysis in JSON format.
+                system_message = f"""You are an expert code reviewer specializing in {language} development and IaC configurations. 
+Analyze code or configuration files against {standard_desc} and provide a detailed analysis in JSON format.
 Focus on security vulnerabilities, code quality issues, and adherence to industry standards."""
                 
                 user_message = f"""
-Analyze the following {language} code against {standard_desc}:
+Analyze the following {language} code or configuration against {standard_desc}:
 
 File: {os.path.basename(file_path)}
 
-Code:
+Content:
 ```{language.lower()}
 {content[:3000]}
 ```
@@ -343,7 +364,7 @@ Relevant Industry Standards:
 
 Provide a comprehensive analysis covering:
 1. Security vulnerabilities (OWASP, CWE)
-2. Code quality issues
+2. Code quality issues (or configuration best practices)
 3. Industry standard violations
 4. Recommendations for improvement
 
@@ -352,7 +373,7 @@ Return your response in this exact JSON format:
   "file": "{os.path.basename(file_path)}",
   "language": "{language}",
   "security_issues": "List any security vulnerabilities found",
-  "quality_issues": "List code quality problems", 
+  "quality_issues": "List code or configuration quality problems",
   "standard_violations": "List industry standard violations",
   "recommendations": "Provide specific improvement recommendations",
   "severity": "HIGH/MEDIUM/LOW based on issues found",
@@ -379,7 +400,6 @@ Return your response in this exact JSON format:
                 
                 try:
                     analysis = json.loads(response_text)
-                    # Ensure we have the full file path in the response
                     analysis["file"] = file_path
                     analysis["full_path"] = file_path
                     findings.append(analysis)
@@ -426,8 +446,8 @@ def company_specific_agent(repo_dir):
         # Read code files
         code_files = read_code_files(repo_dir)
         if not code_files:
-            logger.warning("No code files found for company-specific scan")
-            return {"error": "No code files found"}
+            logger.warning("No code or IaC files found for company-specific scan")
+            return {"error": "No code or IaC files found"}
 
         findings = []
         for file_path, content in code_files:
@@ -437,7 +457,7 @@ def company_specific_agent(repo_dir):
                 
                 if not relevant_sections:
                     # Fallback to general query
-                    query = f"Check this {language} code for company-specific coding standards style guidelines"
+                    query = f"Check this {language} code or configuration for company-specific coding standards style guidelines"
                     relevant_sections = retrieve_relevant_sections(COMPANY_STANDARDS_DOC, query, top_k=3)
                 
                 if not relevant_sections:
@@ -445,15 +465,15 @@ def company_specific_agent(repo_dir):
                     relevant_sections = ["General company coding guidelines apply"]
 
                 # Construct system and user messages for chat completion
-                system_message = f"""You are an expert code reviewer focusing on company-specific coding standards and style guidelines.
-Analyze {language} code for adherence to company policies, coding conventions, and internal best practices."""
+                system_message = f"""You are an expert code reviewer focusing on company-specific coding standards and style guidelines for {language}.
+Analyze code or configuration files for adherence to company policies, coding conventions, and internal best practices."""
                 
                 user_message = f"""
-Analyze the following {language} code against company-specific standards:
+Analyze the following {language} code or configuration against company-specific standards:
 
 File: {os.path.basename(file_path)}
 
-Code:
+Content:
 ```{language.lower()}
 {content[:3000]}
 ```
@@ -499,7 +519,6 @@ Return your response in this exact JSON format:
                 
                 try:
                     analysis = json.loads(response_text)
-                    # Ensure we have the full file path in the response
                     analysis["file"] = file_path
                     analysis["full_path"] = file_path
                     findings.append(analysis)
@@ -537,7 +556,7 @@ def generate_report(industry_results, company_results):
     """
     Generate a comprehensive report combining results from both agents.
     """
-    logger.debug("Generating comprehensive report")
+    logger.debug(" generating comprehensive report")
     
     # Calculate summary statistics
     industry_files = len(industry_results.get("findings", [])) if industry_results else 0
@@ -581,8 +600,8 @@ def generate_report(industry_results, company_results):
         report["recommendations"]["priority_actions"].append(f"Address {high_severity_issues} high-severity security/quality issues immediately")
     
     if industry_results and company_results:
-        report["recommendations"]["general_improvements"].append("Review and implement coding standards consistently across all files")
-        report["recommendations"]["general_improvements"].append("Consider implementing automated code quality checks in CI/CD pipeline")
+        report["recommendations"]["general_improvements"].append("Review and implement coding and IaC standards consistently across all files")
+        report["recommendations"]["general_improvements"].append("Consider implementing automated code and IaC quality checks in CI/CD pipeline")
     
     return report
 
@@ -693,7 +712,7 @@ async def health_check():
     "/scan-standards",
     response_model=StandardsScanResponse,
     summary="Scan a public GitHub repository against standards",
-    description="Clones a public GitHub repository and scans it against industry and company-specific standards using Azure OpenAI and RAG, with standards from .docx files in the 'standards' folder."
+    description="Clones a public GitHub repository and scans code and IaC files against industry and company-specific standards using Azure OpenAI and RAG, with standards from .docx files in the 'standards' folder."
 )
 async def scan_standards(scan_input: StandardsScanInput):
     """
@@ -736,8 +755,8 @@ async def download_file(filename: str):
     if os.path.exists(file_path):
         logger.debug(f"Serving file: {file_path}")
         return FileResponse(
-            file_path, 
-            media_type="application/json", 
+            file_path,
+            media_type="application/json",
             filename=filename,
             headers={"Content-Disposition": f"attachment; filename={filename}"}
         )
