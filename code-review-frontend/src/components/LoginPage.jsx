@@ -44,20 +44,13 @@ const Login = () => {
       setError('Please enter both username and password');
       return;
     }
-
     setIsLoading(true);
     setError('');
-
-    //Credentials
     const hardcodedUsername = 'admin';
     const hardcodedPassword = 'password123';
-
     setTimeout(() => {
-      if (
-        formData.username === hardcodedUsername &&
-        formData.password === hardcodedPassword
-      ) {
-        localStorage.setItem('admin_token', 'token_for_demo'); 
+      if (formData.username === hardcodedUsername && formData.password === hardcodedPassword) {
+        localStorage.setItem('admin_token', 'token_for_demo');
         setIsAuthenticated(true);
         navigate('/');
       } else {

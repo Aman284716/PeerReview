@@ -1,5 +1,7 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File, Depends, Form, Header
 from fastapi.responses import FileResponse
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import os
 import uuid
@@ -15,10 +17,10 @@ import time
 from docx import Document
 import psutil
 from dotenv import load_dotenv
-from fastapi.middleware.cors import CORSMiddleware
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
+from pathlib import Path
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -27,7 +29,7 @@ load_dotenv()
 
 app = FastAPI(
     title="Code Review System - AI Standards Scanner",
-    description="API to scan a public GitHub repository against industry and company-specific standards for code and IaC files using Azure OpenAI and RAG, with standards from .docx files in the 'standards' folder.",
+    description="API to scan a public GitHub repository against industry and company-specific standards for code and IaC files using Azure OpenAI and RAG, with standards from .docx files.",
     version="1.0.0"
 )
 
@@ -40,18 +42,18 @@ app.add_middleware(
 )
 
 # Configuration
-UPLOAD_FOLDER = "uploads"
-STANDARDS_FOLDER = "standards"
-INDUSTRY_STANDARDS_FILE = os.path.join(STANDARDS_FOLDER, "Industry_Standards-updated.docx")
-COMPANY_STANDARDS_FILE = os.path.join(STANDARDS_FOLDER, "company_specific_standards.docx")
+UPLOAD_FOLDER = Path("uploads")
+INDUSTRY_STANDARDS_DIR = Path(r"C:\Users\286194\Documents\Aman\code_review\PeerReview\Backend\standards\industry_standards")
+COMPANY_STANDARDS_DIR = Path(r"C:\Users\286194\Documents\Aman\code_review\PeerReview\Backend\standards\company_specific")
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-os.makedirs(STANDARDS_FOLDER, exist_ok=True)
+INDUSTRY_STANDARDS_DIR.mkdir(exist_ok=True)
+COMPANY_STANDARDS_DIR.mkdir(exist_ok=True)
 AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
 AZURE_OPENAI_KEY = os.getenv("AZURE_OPENAI_API_KEY")
 AZURE_OPENAI_MODEL = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME")
 AZURE_OPENAI_VERSION = os.getenv("AZURE_OPENAI_API_VERSION")
-MAX_CONCURRENT_API_CALLS = 10  # Limit concurrent API calls to avoid rate limits
-MAX_WORKERS = 20  # Number of threads for parallel processing
+MAX_CONCURRENT_API_CALLS = 10
+MAX_WORKERS = 20
 
 # Initialize Azure OpenAI client
 try:
@@ -65,11 +67,39 @@ except Exception as e:
     logger.error(f"Failed to initialize Azure OpenAI client: {e}")
     openai_client = None
 
+security = HTTPBearer()
+
+def read_docx_content(file_path: Path):
+    """Read text content from a .docx file."""
+    try:
+        doc = Document(file_path)
+        return "\n".join([para.text.strip() for para in doc.paragraphs if para.text.strip()])
+    except Exception as e:
+        logger.error(f"Error reading {file_path.name}: {str(e)}")
+        return f"Error reading {file_path.name}: {str(e)}"
+
+def analyze_doc_content(content: str):
+    """Analyze .docx content using Azure OpenAI."""
+    if not openai_client:
+        return "Azure OpenAI client not initialized."
+    try:
+        prompt = f"Summarize the key rules or standards in the following document content and identify any compliance issues:\n\n{content[:4000]}"
+        response = openai_client.chat.completions.create(
+            model=AZURE_OPENAI_MODEL or "gpt-35-turbo",
+            messages=[
+                {"role": "system", "content": "You are an expert in analyzing coding standards and compliance."},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=500,
+            temperature=0.5
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        logger.error(f"Azure OpenAI analysis failed: {str(e)}")
+        return f"Analysis failed: {str(e)}"
+
 def read_docx(file_path):
-    """
-    Read text from a .docx file.
-    Returns the content as a string or None if the file cannot be read.
-    """
+    """Read text from a .docx file (used for GitHub scanning)."""
     logger.debug(f"Reading .docx file: {file_path}")
     try:
         if not os.path.exists(file_path):
@@ -87,10 +117,11 @@ def read_docx(file_path):
         return None
 
 # Load standards from .docx files
+INDUSTRY_STANDARDS_FILE = INDUSTRY_STANDARDS_DIR / "Industry_Standards-updated.docx"
+COMPANY_STANDARDS_FILE = COMPANY_STANDARDS_DIR / "company_specific_standards.docx"
 INDUSTRY_STANDARDS_DOC = read_docx(INDUSTRY_STANDARDS_FILE)
 COMPANY_STANDARDS_DOC = read_docx(COMPANY_STANDARDS_FILE)
 
-# Fallback standards if documents fail to load
 if not INDUSTRY_STANDARDS_DOC:
     logger.warning("Industry standards document not found or empty, using fallback")
     INDUSTRY_STANDARDS_DOC = """
@@ -118,14 +149,24 @@ if not COMPANY_STANDARDS_DOC:
 logger.info(f"Industry standards loaded: {len(INDUSTRY_STANDARDS_DOC)} characters")
 logger.info(f"Company standards loaded: {len(COMPANY_STANDARDS_DOC)} characters")
 
+async def verify_admin_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    token = credentials.credentials
+    if token != "token_for_demo":
+        raise HTTPException(status_code=401, detail="Invalid or missing admin token")
+    return token
+
+def read_docx_rules(file_path: Path):
+    try:
+        doc = Document(file_path)
+        rules = [para.text.strip() for para in doc.paragraphs if para.text.strip()]
+        return rules
+    except Exception as e:
+        return [f"Error reading {file_path.name}: {str(e)}"]
+
 def generate_unique_id():
-    """Generate a unique identifier for directories or files."""
     return str(uuid.uuid4())
 
 def safe_rmtree(path, retries=5, delay=2):
-    """
-    Safely remove a directory with retries and process cleanup for Windows.
-    """
     logger.debug(f"Attempting to remove directory: {path}")
     for attempt in range(retries):
         try:
@@ -147,9 +188,6 @@ def safe_rmtree(path, retries=5, delay=2):
     return False
 
 def clone_repo(github_url):
-    """
-    Clone a public repository from the given URL.
-    """
     repo_dir = os.path.join(UPLOAD_FOLDER, f"repo_{generate_unique_id()}")
     repo_dir = repo_dir.replace("/", os.sep)
     logger.debug(f"Cloning repository from {github_url} to {repo_dir}")
@@ -171,10 +209,6 @@ def clone_repo(github_url):
         return None
 
 def read_code_files(repo_dir, max_files=1000, max_size=10000):
-    """
-    Read code and IaC files from the repository, limiting to max_files and max_size per file.
-    Returns a list of (file_path, content) tuples.
-    """
     logger.debug(f"Reading code and IaC files from {repo_dir}")
     code_files = []
     extensions = (
@@ -197,13 +231,12 @@ def read_code_files(repo_dir, max_files=1000, max_size=10000):
                 except Exception as e:
                     logger.warning(f"Failed to read {file_path}: {e}")
     if not code_files:
-        logger.warning(f"No code or IaC files found in {repo_dir} with extensions {extensions} or names {dockerfile_names}")
+        logger.warning(f"No code or IaC files found in {repo_dir}")
     else:
         logger.debug(f"Found {len(code_files)} code and IaC files")
     return code_files
 
 def simple_vectorize(text):
-    """Convert text to a simple vector for RAG (mock implementation)."""
     if not text or not text.strip():
         return np.array([0.0])
     words = text.lower().split()
@@ -213,9 +246,6 @@ def simple_vectorize(text):
     return np.array([word_count, char_count, unique_words], dtype=float)
 
 def retrieve_relevant_sections(doc_content, query, top_k=3):
-    """
-    Retrieve relevant sections from a document using improved RAG.
-    """
     logger.debug("Retrieving relevant sections for RAG")
     try:
         if not doc_content or not doc_content.strip():
@@ -250,9 +280,6 @@ def retrieve_relevant_sections(doc_content, query, top_k=3):
         return []
 
 def get_language_specific_standards(file_path, standards_doc):
-    """
-    Extract language-specific standards based on file extension or name.
-    """
     file_name = os.path.basename(file_path)
     extension = os.path.splitext(file_name)[1].lower()
     language_map = {
@@ -283,9 +310,6 @@ def get_language_specific_standards(file_path, standards_doc):
     return relevant_sections, language
 
 async def analyze_file_industry(file_path, content, language, relevant_sections, standard_desc, semaphore):
-    """
-    Analyze a single file against industry standards using Azure OpenAI.
-    """
     async with semaphore:
         try:
             system_message = f"""You are an expert code reviewer specializing in {language} development and IaC configurations. 
@@ -363,9 +387,6 @@ Return your response in this exact JSON format:
             }
 
 async def industry_standards_agent(repo_dir, industrial_standard):
-    """
-    Analyze repository against industry standards using Azure OpenAI and RAG with parallel processing.
-    """
     logger.debug(f"Starting industry standards scan with standard: {industrial_standard}")
     if not openai_client:
         logger.error("Azure OpenAI client not initialized")
@@ -376,8 +397,8 @@ async def industry_standards_agent(repo_dir, industrial_standard):
             logger.warning("No code or IaC files found for industry standards scan")
             return {"error": "No code or IaC files found"}
         standards_map = {
-            "owasp-top-10": "OWASP Top 10 security standards",
-            "cwe-top-25": "CWE Top 25 most dangerous software weaknesses",
+            "owasp": "OWASP Top 10 security standards",
+            "cwe": "CWE Top 25 most dangerous software weaknesses",
             "sonarqube": "SonarQube code quality standards",
             "general": "General industry coding standards"
         }
@@ -409,9 +430,6 @@ async def industry_standards_agent(repo_dir, industrial_standard):
         return {"error": f"Industry standards scan failed: {str(e)}"}
 
 async def analyze_file_company(file_path, content, language, relevant_sections, semaphore):
-    """
-    Analyze a single file against company-specific standards using Azure OpenAI.
-    """
     async with semaphore:
         try:
             system_message = f"""You are an expert code reviewer focusing on company-specific coding standards and style guidelines for {language}.
@@ -488,9 +506,6 @@ Return your response in this exact JSON format:
             }
 
 async def company_specific_agent(repo_dir):
-    """
-    Analyze repository against company-specific standards using Azure OpenAI and RAG with parallel processing.
-    """
     logger.debug("Starting company-specific standards scan")
     if not openai_client:
         logger.error("Azure OpenAI client not initialized")
@@ -526,9 +541,6 @@ async def company_specific_agent(repo_dir):
         return {"error": f"Company-specific scan failed: {str(e)}"}
 
 def generate_report(industry_results, company_results):
-    """
-    Generate a comprehensive report combining results from both agents.
-    """
     logger.debug("Generating comprehensive report")
     industry_files = len(industry_results.get("findings", [])) if industry_results else 0
     company_files = len(company_results.get("findings", [])) if company_results else 0
@@ -569,9 +581,6 @@ def generate_report(industry_results, company_results):
     return report
 
 async def process_github_repository(github_url, industrial_standard):
-    """
-    Process a GitHub repository by cloning it and scanning with both agents
-    """
     logger.info(f"Processing GitHub repository: {github_url}")
     parsed_url = urlparse(github_url)
     if not parsed_url.netloc.endswith("github.com"):
@@ -616,7 +625,7 @@ class StandardsScanInput(BaseModel):
         schema_extra = {
             "example": {
                 "github_url": "https://github.com/pallets/flask.git",
-                "industrial_standard": "owasp-top-10"
+                "industrial_standard": "owasp"
             }
         }
 
@@ -634,20 +643,21 @@ class StandardsScanResponse(BaseModel):
 
 @app.get("/")
 async def root():
-    """Root endpoint with API information."""
     return {
         "message": "Code Review System - AI Standards Scanner",
         "version": "1.0.0",
         "endpoints": {
             "/scan-standards": "POST - Scan repository against standards",
             "/download/{filename}": "GET - Download generated report",
+            "/standards": "GET - List standards",
+            "/upload-standard": "POST - Upload standard document",
+            "/scan-standards-documents": "POST - Scan standards documents",
             "/docs": "GET - API documentation"
         }
     }
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint."""
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
@@ -656,16 +666,8 @@ async def health_check():
         "company_standards": "loaded" if COMPANY_STANDARDS_DOC else "not loaded"
     }
 
-@app.post(
-    "/scan-standards",
-    response_model=StandardsScanResponse,
-    summary="Scan a public GitHub repository against standards",
-    description="Clones a public GitHub repository and scans code and IaC files against industry and company-specific standards using Azure OpenAI and RAG, with standards from .docx files in the 'standards' folder."
-)
+@app.post("/scan-standards", response_model=StandardsScanResponse)
 async def scan_standards(scan_input: StandardsScanInput):
-    """
-    API endpoint to scan a public GitHub repository against standards.
-    """
     logger.info(f"Received scan request: {scan_input.dict()}")
     try:
         output_file = await process_github_repository(
@@ -684,11 +686,124 @@ async def scan_standards(scan_input: StandardsScanInput):
         logger.error(f"Scan error: {e}")
         raise HTTPException(status_code=500, detail=f"Standards scanning error: {str(e)}")
 
+# Replace /standards in server.py
+@app.get("/standards")
+async def get_standards(token: str = Depends(verify_admin_token)):
+    language_rules = {
+        "General": {"industry": [], "company": []},
+        "Python": {"industry": [], "company": []},
+        "JavaScript": {"industry": [], "company": []},
+        "Java": {"industry": [], "company": []},
+        "C#": {"industry": [], "company": []},
+        "Terraform": {"industry": [], "company": []},
+        "YAML": {"industry": [], "company": []},
+        "Bash": {"industry": [], "company": []},
+        "Dockerfile": {"industry": [], "company": []}
+    }
+    for file_path in INDUSTRY_STANDARDS_DIR.glob("*.docx"):
+        rules = read_docx_rules(file_path)
+        for rule in rules:
+            rule_data = {"text": rule, "file": file_path.name}
+            rule_lower = rule.lower()
+            if "python" in rule_lower:
+                language_rules["Python"]["industry"].append(rule_data)
+            elif "javascript" in rule_lower or "js" in rule_lower or "node" in rule_lower:
+                language_rules["JavaScript"]["industry"].append(rule_data)
+            elif "java" in rule_lower:
+                language_rules["Java"]["industry"].append(rule_data)
+            elif "c#" in rule_lower or "csharp" in rule_lower:
+                language_rules["C#"]["industry"].append(rule_data)
+            elif "terraform" in rule_lower:
+                language_rules["Terraform"]["industry"].append(rule_data)
+            elif "yaml" in rule_lower or "cloudformation" in rule_lower:
+                language_rules["YAML"]["industry"].append(rule_data)
+            elif "bash" in rule_lower or "shell" in rule_lower:
+                language_rules["Bash"]["industry"].append(rule_data)
+            elif "dockerfile" in rule_lower or "docker" in rule_lower:
+                language_rules["Dockerfile"]["industry"].append(rule_data)
+            else:
+                language_rules["General"]["industry"].append(rule_data)
+    for file_path in COMPANY_STANDARDS_DIR.glob("*.docx"):
+        rules = read_docx_rules(file_path)
+        for rule in rules:
+            rule_data = {"text": rule, "file": file_path.name}
+            rule_lower = rule.lower()
+            if "python" in rule_lower:
+                language_rules["Python"]["company"].append(rule_data)
+            elif "javascript" in rule_lower or "js" in rule_lower or "node" in rule_lower:
+                language_rules["JavaScript"]["company"].append(rule_data)
+            elif "java" in rule_lower:
+                language_rules["Java"]["company"].append(rule_data)
+            elif "c#" in rule_lower or "csharp" in rule_lower:
+                language_rules["C#"]["company"].append(rule_data)
+            elif "terraform" in rule_lower:
+                language_rules["Terraform"]["company"].append(rule_data)
+            elif "yaml" in rule_lower:
+                language_rules["YAML"]["company"].append(rule_data)
+            elif "bash" in rule_lower or "shell" in rule_lower:
+                language_rules["Bash"]["company"].append(rule_data)
+            elif "dockerfile" in rule_lower or "docker" in rule_lower:
+                language_rules["Dockerfile"]["company"].append(rule_data)
+            else:
+                language_rules["General"]["company"].append(rule_data)
+    return language_rules
+
+@app.post("/upload-standard")
+async def upload_standard(
+    file: UploadFile = File(...),
+    standard_type: str = Form(...),
+    token: str = Depends(verify_admin_token)
+):
+    if not file.filename.endswith(".docx"):
+        raise HTTPException(status_code=400, detail="Only .docx files are supported")
+    target_dir = INDUSTRY_STANDARDS_DIR if standard_type == "industry" else COMPANY_STANDARDS_DIR
+    file_path = target_dir / file.filename
+    try:
+        with file_path.open("wb") as f:
+            shutil.copyfileobj(file.file, f)
+        return {"message": "File uploaded successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
+
+@app.post("/scan-standards-documents")
+async def scan_standards_documents(token: str = Depends(verify_admin_token)):
+    try:
+        industry_files = list(INDUSTRY_STANDARDS_DIR.glob("*.docx"))
+        company_files = list(COMPANY_STANDARDS_DIR.glob("*.docx"))
+        industry_count = len(industry_files)
+        company_count = len(company_files)
+        total_standards = industry_count + company_count
+        analysis_results = []
+        for file_path in industry_files + company_files:
+            content = read_docx_content(file_path)
+            if content.startswith("Error"):
+                analysis_results.append({
+                    "file": file_path.name,
+                    "type": "industry" if file_path in industry_files else "company",
+                    "status": "error",
+                    "details": content
+                })
+            else:
+                analysis = analyze_doc_content(content)
+                analysis_results.append({
+                    "file": file_path.name,
+                    "type": "industry" if file_path in industry_files else "company",
+                    "status": "success",
+                    "details": analysis
+                })
+        return {
+            "total_standards": total_standards,
+            "industry_standards_count": industry_count,
+            "company_standards_count": company_count,
+            "details": "Scanned all standards documents successfully.",
+            "analysis_results": analysis_results
+        }
+    except Exception as e:
+        logger.error(f"Scan failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Scan failed: {str(e)}")
+
 @app.get("/download/{filename}")
 async def download_file(filename: str):
-    """
-    Download the generated report file.
-    """
     logger.debug(f"Download request for {filename}")
     file_path = os.path.join(UPLOAD_FOLDER, filename)
     if os.path.exists(file_path):
